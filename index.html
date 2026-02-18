@@ -76,7 +76,7 @@
             <span class="text-orange-terminal font-bold flex items-center gap-1">
                 <i data-lucide="globe" class="w-3 h-3"></i> 
                 <span class="hidden sm:inline">BLOOMBERG</span> LITE 
-                <span id="status-message" class="text-[10px] opacity-70 hidden md:inline">:: PRET</span>
+                <span id="status-message" class="text-[10px] opacity-70 hidden md:inline">:: INITIALISATION</span>
             </span>
             <span id="loader" class="hidden text-yellow-500"><i data-lucide="refresh-cw" class="w-3 h-3 animate-spin"></i></span>
         </div>
@@ -228,12 +228,12 @@
     <script>
         // --- CONFIG & STATE ---
         let stocksConfig = [
-            { id: 'CAC40', yahooSymbol: '^FCHI', name: 'CAC 40 Index', type: 'INDEX' },
-            { id: 'EUR/USD', yahooSymbol: 'EURUSD=X', name: 'Euro / US Dollar', type: 'FOREX' },
-            { id: 'BTC/USD', yahooSymbol: 'BTC-USD', name: 'Bitcoin USD', type: 'CRYPTO' },
-            { id: 'TOTAL', yahooSymbol: 'TTE.PA', name: 'TotalEnergies', type: 'EQUITY' },
-            { id: 'LVMH', yahooSymbol: 'MC.PA', name: 'LVMH Moet Hennessy', type: 'EQUITY' },
-            { id: 'GOLD', yahooSymbol: 'GC=F', name: 'Gold Futures', type: 'COMMODITY' },
+            { id: 'CAC40', yahooSymbol: '^FCHI', name: 'CAC 40 Index', type: 'INDEX', basePrice: 7934.50 },
+            { id: 'EUR/USD', yahooSymbol: 'EURUSD=X', name: 'Euro / US Dollar', type: 'FOREX', basePrice: 1.0845 },
+            { id: 'BTC/USD', yahooSymbol: 'BTC-USD', name: 'Bitcoin USD', type: 'CRYPTO', basePrice: 64230.00 },
+            { id: 'TOTAL', yahooSymbol: 'TTE.PA', name: 'TotalEnergies', type: 'EQUITY', basePrice: 62.40 },
+            { id: 'LVMH', yahooSymbol: 'MC.PA', name: 'LVMH Moet Hennessy', type: 'EQUITY', basePrice: 845.20 },
+            { id: 'GOLD', yahooSymbol: 'GC=F', name: 'Gold Futures', type: 'COMMODITY', basePrice: 2350.10 },
         ];
         
         const newsFeed = [
@@ -251,6 +251,7 @@
         let mobileView = 'LIST'; // 'LIST' or 'CHART'
         let searchTimeout = null;
         let suggestions = [];
+        let isOfflineMode = false;
 
         // --- UTILS ---
         const formatNumber = (num) => {
@@ -280,6 +281,7 @@
             suggestionsList: document.getElementById('suggestions-list'),
             loader: document.getElementById('loader'),
             statusMsg: document.getElementById('status-message'),
+            apiStatus: document.getElementById('api-status'),
             
             // Views
             viewList: document.getElementById('view-watchlist'),
@@ -309,9 +311,54 @@
             btnHpSidebar: document.getElementById('btn-hp-sidebar')
         };
 
+        // --- MOCK DATA GENERATOR (FALLBACK) ---
+        function generateMockData(stockConfig, range) {
+            const base = stockConfig.basePrice || 100;
+            const volatility = range === '10y' ? 0.2 : 0.02; // Plus volatil sur 10 ans
+            const pointsCount = 50;
+            let currentPrice = base;
+            
+            // Generate History
+            const history = [];
+            for(let i=0; i<pointsCount; i++) {
+                const change = (Math.random() - 0.5) * base * volatility;
+                currentPrice += change;
+                if(currentPrice < 0.1) currentPrice = 0.1;
+                history.push(currentPrice);
+            }
+
+            // Calculs
+            const price = history[history.length - 1];
+            const prevClose = history[0]; // Simplification
+            const change = price - prevClose;
+            const changePercent = (change / prevClose) * 100;
+            const high = Math.max(...history);
+            const low = Math.min(...history);
+            
+            return {
+                ...stockConfig,
+                price: price,
+                change: changePercent,
+                changeValue: change,
+                volume: Math.floor(Math.random() * 10000000),
+                history: history,
+                currency: 'USD',
+                high: high,
+                low: low,
+                prevClose: prevClose,
+                fetchedRange: range,
+                isMock: true
+            };
+        }
+
         // --- API FUNCTIONS ---
 
         async function fetchStockData(stockConfig, timeRange = '1d') {
+            // Mode "Forcé Simulation" si déjà détecté hors ligne pour éviter les timeouts
+            if (isOfflineMode) {
+                return generateMockData(stockConfig, timeRange);
+            }
+
             let interval = '5m';
             let rangeParam = '1d';
 
@@ -320,12 +367,20 @@
                 rangeParam = '10y';
             }
 
+            // Tentative via Proxy
             const url = `https://query1.finance.yahoo.com/v8/finance/chart/${stockConfig.yahooSymbol}?interval=${interval}&range=${rangeParam}`;
-            // Proxy CORS
             const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(url)}`;
             
             try {
-                const response = await fetch(proxyUrl);
+                // Timeout de 3 secondes pour ne pas bloquer l'interface
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 3000);
+                
+                const response = await fetch(proxyUrl, { signal: controller.signal });
+                clearTimeout(timeoutId);
+
+                if (!response.ok) throw new Error("Proxy error");
+
                 const data = await response.json();
                 
                 if (data.chart && data.chart.result && data.chart.result[0]) {
@@ -354,31 +409,41 @@
                         fetchedRange: timeRange
                     };
                 }
-                return null;
+                throw new Error("Invalid Data Structure");
             } catch (err) {
-                console.error(`Error fetching ${stockConfig.yahooSymbol}:`, err);
-                return null;
+                console.warn(`API Fail for ${stockConfig.id}, using mock.`, err);
+                return generateMockData(stockConfig, timeRange);
             }
         }
 
         async function fetchSuggestions(query) {
-            if (!query || query.length < 2) return [];
-            
+            // Mock suggestions si offline ou erreur
+            const mockSuggestions = [
+                { symbol: query.toUpperCase(), shortname: `${query.toUpperCase()} (Simulé)`, quoteType: 'EQUITY' },
+                { symbol: `${query.toUpperCase()}-F`, shortname: `${query.toUpperCase()} Futures`, quoteType: 'FUTURE' }
+            ];
+
+            if (isOfflineMode) return mockSuggestions;
+
             const url = `https://query1.finance.yahoo.com/v1/finance/search?q=${query}&quotesCount=5&newsCount=0`;
             const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(url)}`;
 
             try {
-                const response = await fetch(proxyUrl);
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 1500);
+                
+                const response = await fetch(proxyUrl, { signal: controller.signal });
+                clearTimeout(timeoutId);
+
                 const data = await response.json();
                 if (data.quotes && data.quotes.length > 0) {
                     return data.quotes
                         .filter(q => ['EQUITY', 'INDEX', 'ETF', 'CRYPTOCURRENCY'].includes(q.quoteType))
                         .slice(0, 4);
                 }
-                return [];
+                return mockSuggestions;
             } catch (e) {
-                console.error("Search error", e);
-                return [];
+                return mockSuggestions;
             }
         }
 
@@ -392,9 +457,22 @@
             const results = await Promise.all(promises);
             const validResults = results.filter(r => r !== null);
             
+            // Check if we are running on mocks mostly
+            const mockCount = validResults.filter(r => r.isMock).length;
+            if (mockCount > validResults.length / 2) {
+                isOfflineMode = true;
+                els.statusMsg.innerText = 'MODE DÉMO / SIMULATION';
+                els.statusMsg.classList.add('text-yellow-500');
+                els.apiStatus.innerText = 'OFFLINE (SIM)';
+                els.apiStatus.classList.add('text-yellow-500');
+            } else {
+                els.statusMsg.innerText = 'PRET';
+                els.statusMsg.classList.remove('text-yellow-500');
+                els.apiStatus.innerText = 'OK';
+            }
+            
             if (validResults.length > 0) {
                 stocksData = validResults;
-                els.statusMsg.innerText = 'PRET';
                 renderWatchlist();
                 renderTickerTape();
                 
@@ -434,7 +512,7 @@
                 renderWatchlist(); // Update prices in list
             }
             els.loader.classList.add('hidden');
-            els.statusMsg.innerText = 'PRET';
+            if(!isOfflineMode) els.statusMsg.innerText = 'PRET';
         }
 
         function setRange(newRange) {
@@ -545,7 +623,7 @@
             // Update Header
             els.stockId.innerText = data.id;
             els.stockName.innerText = data.name;
-            els.stockSymbol.innerText = `| ${data.yahooSymbol}`;
+            els.stockSymbol.innerText = `| ${data.yahooSymbol} ${data.isMock ? '(SIM)' : ''}`;
             els.stockRangeLabel.innerText = currentRange === '10y' ? 'HP (10Y)' : '1D';
             
             const changeCol = getChangeColorClass(data.change);
@@ -561,7 +639,7 @@
             // Update Info Panel
             els.infoPrev.innerText = formatNumber(data.prevClose);
             els.infoOpen.innerText = formatNumber(data.price); // Using current price as open proxy for simplicity in display
-            els.infoCur.innerText = data.currency || '---';
+            els.infoCur.innerText = data.currency || 'USD';
             els.infoType.innerText = data.type;
             
             els.statHigh.innerText = formatNumber(data.high);
@@ -642,7 +720,7 @@
                     addStockFromSuggestion(suggestions[0]);
                 } else if (cmd.length > 0) {
                      // Try direct add
-                     addStockFromSuggestion({ symbol: cmd, quoteType: 'EQUITY', shortname: `${cmd} (Custom)` });
+                     addStockFromSuggestion({ symbol: cmd, quoteType: 'EQUITY', shortname: `${cmd} (Custom)`, basePrice: 100 });
                 }
                 els.input.value = '';
                 els.suggestionsBox.classList.add('hidden');
@@ -676,7 +754,8 @@
                 id: s.symbol, 
                 yahooSymbol: s.symbol, 
                 name: s.shortname || s.longname || s.symbol, 
-                type: s.quoteType 
+                type: s.quoteType,
+                basePrice: 100 // Fallback price for mock
             };
 
             // Avoid dupes
