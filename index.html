@@ -1,604 +1,717 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Activity, Globe, Newspaper, ArrowLeft, Menu, RefreshCw, AlertTriangle, Calendar, Search } from 'lucide-react';
-
-// --- CONFIGURATION INITIALE ---
-
-const INITIAL_STOCKS_CONFIG = [
-  { id: 'CAC40', yahooSymbol: '^FCHI', name: 'CAC 40 Index', type: 'INDEX' },
-  { id: 'EUR/USD', yahooSymbol: 'EURUSD=X', name: 'Euro / US Dollar', type: 'FOREX' },
-  { id: 'BTC/USD', yahooSymbol: 'BTC-USD', name: 'Bitcoin USD', type: 'CRYPTO' },
-  { id: 'TOTAL', yahooSymbol: 'TTE.PA', name: 'TotalEnergies', type: 'EQUITY' },
-  { id: 'LVMH', yahooSymbol: 'MC.PA', name: 'LVMH Moet Hennessy', type: 'EQUITY' },
-  { id: 'GOLD', yahooSymbol: 'GC=F', name: 'Gold Futures', type: 'COMMODITY' },
-];
-
-const NEWS_FEED = [
-  { time: '10:42', source: 'RTR', headline: 'BCE : Lagarde signale une baisse potentielle des taux en juin.', urgent: true },
-  { time: '10:38', source: 'BBG', headline: 'Le pétrole bondit suite aux tensions géopolitiques au Moyen-Orient.', urgent: false },
-  { time: '10:15', source: 'WSJ', headline: 'Tech : Les résultats de NVIDIA dépassent les attentes des analystes.', urgent: false },
-  { time: '09:55', source: 'AFP', headline: 'CAC40 : Ouverture en hausse, portée par le secteur du luxe.', urgent: false },
-  { time: '09:30', source: 'RTR', headline: 'Inflation en zone Euro : Les chiffres conformes aux prévisions.', urgent: false },
-];
-
-// --- UTILITAIRES ---
-
-const formatNumber = (num) => {
-  if (num === undefined || num === null) return '---';
-  return new Intl.NumberFormat('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(num);
-};
-
-const formatVolume = (num) => {
-  if (!num) return '---';
-  if (num >= 1.0e+9) return (num / 1.0e+9).toFixed(2) + "Md";
-  if (num >= 1.0e+6) return (num / 1.0e+6).toFixed(2) + "M";
-  if (num >= 1.0e+3) return (num / 1.0e+3).toFixed(2) + "K";
-  return num;
-};
-
-// --- COMPOSANT PRINCIPAL ---
-
-export default function App() {
-  const [activeTab, setActiveTab] = useState('MARKET');
-  
-  // État des données
-  const [stocksConfig, setStocksConfig] = useState(INITIAL_STOCKS_CONFIG);
-  const [stocksData, setStocksData] = useState([]);
-  const [selectedTickerId, setSelectedTickerId] = useState('CAC40');
-  
-  // État Mobile & Navigation
-  const [mobileView, setMobileView] = useState('LIST'); // 'LIST' ou 'CHART'
-  
-  // État Graphique
-  const [chartData, setChartData] = useState([]);
-  const [range, setRange] = useState('1d'); // '1d' ou '10y' (HP)
-  
-  // État de l'UI & Recherche
-  const [isLoading, setIsLoading] = useState(false);
-  const [lastUpdate, setLastUpdate] = useState(null);
-  const [error, setError] = useState(null);
-  const [statusMessage, setStatusMessage] = useState('PRET');
-  
-  const [time, setTime] = useState(new Date());
-  
-  // Command Line & Suggestions
-  const [commandInput, setCommandInput] = useState('');
-  const [suggestions, setSuggestions] = useState([]);
-  const [showSuggestions, setShowSuggestions] = useState(false);
-  const searchTimeoutRef = useRef(null);
-
-  // Clock
-  useEffect(() => {
-    const timer = setInterval(() => setTime(new Date()), 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  // --- MOTEUR DE RECUPERATION DE DONNEES ---
-
-  // 1. Fetch Suggestions (Auto-complete)
-  const fetchSuggestions = async (query) => {
-    if (!query || query.length < 2) {
-        setSuggestions([]);
-        return;
-    }
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bloomberg Lite - Terminal Financier</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
     
-    // API Yahoo Search via Proxy
-    const url = `https://query1.finance.yahoo.com/v1/finance/search?q=${query}&quotesCount=5&newsCount=0`;
-    const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(url)}`;
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@400;600;700&display=swap');
 
-    try {
-        const response = await fetch(proxyUrl);
-        const data = await response.json();
-        if (data.quotes && data.quotes.length > 0) {
-            // Filtrer pour garder seulement les actions/indices/etf pertinents
-            const valid = data.quotes
-                .filter(q => q.quoteType === 'EQUITY' || q.quoteType === 'INDEX' || q.quoteType === 'ETF' || q.quoteType === 'CRYPTOCURRENCY')
-                .slice(0, 4); // Max 4 suggestions
-            setSuggestions(valid);
-            setShowSuggestions(true);
-        } else {
-            setSuggestions([]);
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #000;
+            color: #d1d5db; /* gray-300 */
+            overflow: hidden;
+            height: 100vh;
         }
-    } catch (e) {
-        console.error("Search error", e);
-    }
-  };
 
-  // Debounce search input
-  useEffect(() => {
-    if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
-    
-    if (commandInput.length >= 2) {
-        searchTimeoutRef.current = setTimeout(() => {
-            fetchSuggestions(commandInput);
-        }, 400); // Wait 400ms after typing stops
-    } else {
-        setSuggestions([]);
-        setShowSuggestions(false);
-    }
-  }, [commandInput]);
-
-
-  // 2. Fetch Market Data
-  const fetchStockData = async (stockConfig, timeRange = '1d') => {
-    let interval = '5m';
-    let rangeParam = '1d';
-
-    if (timeRange === '10y') {
-        interval = '1mo';
-        rangeParam = '10y';
-    }
-
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${stockConfig.yahooSymbol}?interval=${interval}&range=${rangeParam}`;
-    const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(url)}`;
-    
-    try {
-        const response = await fetch(proxyUrl);
-        const data = await response.json();
-        
-        if (data.chart && data.chart.result && data.chart.result[0]) {
-            const result = data.chart.result[0];
-            const meta = result.meta;
-            const quote = result.indicators.quote[0];
-            
-            const price = meta.regularMarketPrice;
-            const prevClose = meta.chartPreviousClose;
-            const change = price - prevClose; 
-            const changePercent = (change / prevClose) * 100;
-
-            const cleanChartData = quote.close ? quote.close.filter(p => p !== null) : [];
-
-            return {
-                ...stockConfig,
-                price: price,
-                change: changePercent,
-                changeValue: change,
-                volume: meta.regularMarketVolume || 0,
-                history: cleanChartData,
-                currency: meta.currency,
-                high: meta.regularMarketDayHigh,
-                low: meta.regularMarketDayLow,
-                prevClose: prevClose,
-                fetchedRange: timeRange
-            };
+        .font-mono {
+            font-family: 'JetBrains Mono', monospace;
         }
-        return null;
-    } catch (err) {
-        console.error(`Error fetching ${stockConfig.yahooSymbol}:`, err);
-        return null;
-    }
-  };
 
-  const refreshWatchlist = async () => {
-    setIsLoading(true);
-    setStatusMessage('ACTUALISATION...');
-    
-    try {
-        const promises = stocksConfig.map(stock => fetchStockData(stock, '1d'));
-        const results = await Promise.all(promises);
-        const validResults = results.filter(r => r !== null);
-        
-        if (validResults.length > 0) {
-            setStocksData(validResults);
-            setLastUpdate(new Date());
-            setStatusMessage('PRÊT');
-            
-            if (range === '1d') {
-                const current = validResults.find(s => s.id === selectedTickerId);
-                if (current) setChartData(current.history);
-            }
+        /* Scrollbar customisation */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
         }
-    } catch (e) {
-        setError("Erreur réseau.");
-    } finally {
-        setIsLoading(false);
-    }
-  };
+        ::-webkit-scrollbar-track {
+            background: #0a0a0a;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #333;
+            border-radius: 3px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
 
-  const fetchSpecificTicker = async (tickerId, targetRange) => {
-      setIsLoading(true);
-      setStatusMessage(`CHARGEMENT ${targetRange.toUpperCase()}...`);
-      
-      const config = stocksConfig.find(s => s.id === tickerId) || stocksConfig.find(s => s.yahooSymbol === tickerId);
-      if (!config) {
-          setIsLoading(false);
-          return;
-      }
-
-      const data = await fetchStockData(config, targetRange);
-      if (data) {
-          setChartData(data.history);
-          setStocksData(prev => {
-              const idx = prev.findIndex(s => s.id === config.id);
-              if (idx >= 0) {
-                  const newArr = [...prev];
-                  newArr[idx] = { ...data, history: data.history };
-                  return newArr;
-              }
-              return [...prev, data];
-          });
-      }
-      setIsLoading(false);
-      setStatusMessage('PRET');
-  };
-
-  // --- EFFETS ---
-
-  useEffect(() => {
-    refreshWatchlist();
-    const interval = setInterval(refreshWatchlist, 60000); 
-    return () => clearInterval(interval);
-  }, [stocksConfig]);
-
-  useEffect(() => {
-      fetchSpecificTicker(selectedTickerId, range);
-  }, [selectedTickerId, range]);
-
-
-  // --- GESTION DES COMMANDES & CLICK ---
-
-  const addStockFromSuggestion = async (suggestion) => {
-      setCommandInput('');
-      setSuggestions([]);
-      setShowSuggestions(false);
-
-      const newId = suggestion.symbol;
-      setStatusMessage(`AJOUT DE ${newId}...`);
-      
-      const newStockConfig = { 
-          id: newId, 
-          yahooSymbol: newId, 
-          name: suggestion.shortname || suggestion.longname || newId, 
-          type: suggestion.quoteType 
-      };
-
-      // Check duplicate
-      if (!stocksConfig.find(s => s.id === newId)) {
-          setStocksConfig(prev => [newStockConfig, ...prev]);
-      }
-      
-      // Select it and go to chart view (especially for mobile)
-      setSelectedTickerId(newId);
-      setRange('1d');
-      setMobileView('CHART'); 
-  };
-
-  const handleCommandSubmit = async (e) => {
-      if (e.key === 'Enter') {
-          const cmd = commandInput.trim().toUpperCase();
-
-          if (cmd === 'HP') { setRange('10y'); setCommandInput(''); return; }
-          if (cmd === '1D') { setRange('1d'); setCommandInput(''); return; }
-
-          // Si on a des suggestions, on prend la première
-          if (suggestions.length > 0) {
-              addStockFromSuggestion(suggestions[0]);
-              return;
-          }
-
-          // Sinon, on essaie comme avant (si l'utilisateur a tapé un ticker exact sans attendre)
-          addStockFromSuggestion({ symbol: cmd, quoteType: 'EQUITY', shortname: `${cmd} (Custom)` });
-      }
-  };
-
-  // --- RENDER HELPERS ---
-  const getSelectedStock = () => stocksData.find(s => s.id === selectedTickerId) || stocksConfig[0];
-  const selectedStock = getSelectedStock();
-  const isPositive = selectedStock && selectedStock.change >= 0;
-
-  const getChangeColor = (val) => {
-    if (val > 0) return 'text-green-500';
-    if (val < 0) return 'text-red-500';
-    return 'text-gray-400';
-  };
-  const getBgColor = (val) => val >= 0 ? 'bg-green-500/10' : 'bg-red-500/10';
-
-  return (
-    <div className="flex flex-col h-screen bg-black text-gray-300 font-sans overflow-hidden selection:bg-orange-500 selection:text-black">
-      
-      {/* --- HEADER SUPERIEUR --- */}
-      <header className="h-10 bg-[#1a1a1a] border-b border-gray-800 flex items-center justify-between px-2 text-xs font-mono uppercase tracking-wider shrink-0 z-50">
-        <div className="flex items-center space-x-2 md:space-x-4">
-          {/* Mobile Back Button */}
-          {mobileView === 'CHART' && (
-              <button 
-                onClick={() => setMobileView('LIST')}
-                className="md:hidden text-orange-500 mr-1"
-              >
-                  <ArrowLeft size={16} />
-              </button>
-          )}
-          
-          <span className="text-orange-500 font-bold flex items-center gap-1">
-            <Globe size={14} /> <span className="hidden sm:inline">BLOOMBERG</span> LITE 
-            <span className="text-[10px] opacity-70 hidden md:inline">:: {statusMessage}</span>
-          </span>
-          {isLoading && <RefreshCw size={10} className="animate-spin text-yellow-500"/>}
-        </div>
-        <div className="flex items-center space-x-4">
-            <span className="text-orange-500 font-bold">{time.toLocaleTimeString()}</span>
-            <span className="bg-orange-600 text-black px-1 font-bold hidden sm:inline">LIVE</span>
-        </div>
-      </header>
-
-      {/* --- TICKER TAPE (Hidden on tiny screens if needed, but keeping for vibe) --- */}
-      <div className="h-8 bg-black border-b border-gray-800 flex items-center overflow-hidden whitespace-nowrap shrink-0">
-        <div className="animate-marquee flex items-center space-x-8 px-4">
-            {stocksData.length > 0 ? stocksData.map((s, i) => (
-                <div key={i} className="flex items-center space-x-2 text-xs font-mono">
-                    <span className="font-bold text-orange-400">{s.id}</span>
-                    <span className={getChangeColor(s.change)}>{formatNumber(s.price)}</span>
-                    <span className={`text-[10px] ${getChangeColor(s.change)}`}>
-                        {s.change >= 0 ? '▲' : '▼'} {Math.abs(s.change).toFixed(2)}%
-                    </span>
-                </div>
-            )) : <span className="text-xs font-mono text-gray-600">CONNEXION AUX MARCHÉS...</span>}
-        </div>
-      </div>
-
-      <div className="flex-1 flex overflow-hidden relative">
-        
-        {/* --- SIDEBAR NAVIGATION (Hidden on Mobile) --- */}
-        <nav className="w-16 bg-[#111] hidden md:flex flex-col items-center py-4 border-r border-gray-800 space-y-6 shrink-0">
-            <button onClick={() => setActiveTab('MARKET')} className={`p-2 rounded hover:bg-gray-800 ${activeTab === 'MARKET' ? 'text-orange-500' : 'text-gray-500'}`}>
-                <Activity size={20} />
-            </button>
-            <button onClick={() => setRange(range === '1d' ? '10y' : '1d')} className={`p-2 rounded hover:bg-gray-800 ${range === '10y' ? 'text-orange-500 bg-orange-900/20' : 'text-gray-500'}`} title="HP (Historique)">
-                <Calendar size={20} />
-                <span className="text-[10px] font-bold block text-center mt-1">HP</span>
-            </button>
-            <div className="flex-1"></div>
-            <button onClick={refreshWatchlist} className="p-2 rounded hover:bg-gray-800 text-gray-500">
-                <RefreshCw size={20} />
-            </button>
-        </nav>
-
-        {/* --- MAIN CONTENT AREA --- */}
-        <main className="flex-1 flex relative w-full">
-            
-            {/* COLUMN 1: WATCHLIST 
-               - Visible on Desktop
-               - Visible on Mobile ONLY if mobileView === 'LIST'
-            */}
-            <div className={`
-                ${mobileView === 'LIST' ? 'flex' : 'hidden'} 
-                md:flex w-full md:w-80 border-r border-gray-800 bg-[#0a0a0a] flex-col
-            `}>
-                <div className="p-2 bg-[#151515] border-b border-gray-800 font-bold text-orange-500 text-xs flex justify-between">
-                    <span>SURVEILLANCE</span>
-                    <span className="md:hidden text-gray-500 text-[10px]">TAP TO VIEW</span>
-                </div>
-                <div className="flex-1 overflow-y-auto">
-                    {stocksData.map((stock) => (
-                        <div 
-                            key={stock.id} 
-                            onClick={() => { 
-                                setSelectedTickerId(stock.id); 
-                                setMobileView('CHART'); // Switch to chart on mobile tap
-                            }}
-                            className={`p-3 border-b border-gray-800 cursor-pointer hover:bg-[#1a1a1a] transition-colors ${selectedTickerId === stock.id ? 'bg-[#1a1a1a] border-l-2 border-l-orange-500' : 'border-l-2 border-l-transparent'}`}
-                        >
-                            <div className="flex justify-between items-center mb-1">
-                                <span className="font-bold text-sm text-gray-200">{stock.id}</span>
-                                <span className={`text-sm font-mono font-medium ${getChangeColor(stock.change)}`}>
-                                    {formatNumber(stock.price)}
-                                </span>
-                            </div>
-                            <div className="flex justify-between items-center text-xs">
-                                <span className="text-gray-500 truncate w-24">{stock.name}</span>
-                                <div className={`px-1.5 py-0.5 rounded ${getBgColor(stock.change)} ${getChangeColor(stock.change)}`}>
-                                    {stock.change > 0 ? '+' : ''}{stock.change ? stock.change.toFixed(2) : '0.00'}%
-                                </div>
-                            </div>
-                        </div>
-                    ))}
-                </div>
-            </div>
-
-            {/* COLUMN 2: CHART 
-               - Visible on Desktop
-               - Visible on Mobile ONLY if mobileView === 'CHART'
-            */}
-            <div className={`
-                ${mobileView === 'CHART' ? 'flex' : 'hidden'} 
-                md:flex flex-1 flex-col bg-[#050505] w-full
-            `}>
-                {/* Header Ticker Info */}
-                <div className="h-16 border-b border-gray-800 px-4 md:px-6 flex items-center justify-between bg-[#0f0f0f] shrink-0">
-                    <div>
-                        <div className="flex items-baseline space-x-2 md:space-x-3">
-                            <h1 className="text-xl md:text-2xl font-bold text-white">{selectedStock?.id || '---'}</h1>
-                            <span className="text-gray-400 text-sm hidden lg:inline">{selectedStock?.name}</span>
-                        </div>
-                        <div className="text-[10px] text-gray-600 mt-1 font-mono flex gap-2 md:gap-4">
-                            <span>{range === '10y' ? 'HP (10Y)' : '1D'}</span>
-                            <span className="hidden sm:inline">| {selectedStock?.yahooSymbol}</span>
-                        </div>
-                    </div>
-                    <div className="text-right">
-                        <div className={`text-2xl md:text-3xl font-mono font-light ${getChangeColor(selectedStock?.change)}`}>
-                            {formatNumber(selectedStock?.price)}
-                        </div>
-                        <div className={`text-xs md:text-sm font-mono flex items-center justify-end space-x-2 ${getChangeColor(selectedStock?.change)}`}>
-                            <span>{selectedStock?.change > 0 ? '+' : ''}{selectedStock?.changeValue ? selectedStock.changeValue.toFixed(2) : '0.00'}</span>
-                            <span>({selectedStock?.change > 0 ? '+' : ''}{selectedStock?.change ? selectedStock.change.toFixed(2) : '0.00'}%)</span>
-                        </div>
-                    </div>
-                </div>
-
-                {/* Main Chart Area */}
-                <div className="flex-1 p-2 md:p-6 relative flex flex-col min-h-[300px]">
-                    {/* Toolbar Graphique */}
-                    <div className="absolute top-2 right-2 md:top-4 md:right-6 z-20 flex space-x-1">
-                        <button onClick={() => setRange('1d')} className={`px-2 py-1 text-[10px] font-bold border border-gray-700 ${range === '1d' ? 'bg-orange-600 text-black' : 'bg-black text-gray-500'}`}>1D</button>
-                        <button onClick={() => setRange('10y')} className={`px-2 py-1 text-[10px] font-bold border border-gray-700 ${range === '10y' ? 'bg-orange-600 text-black' : 'bg-black text-gray-500'}`}>HP</button>
-                    </div>
-
-                    <div className="absolute top-2 left-2 md:top-4 md:left-6 text-[10px] md:text-xs text-gray-500 font-mono space-y-1 z-10">
-                        <div>H: {formatNumber(selectedStock?.high)}</div>
-                        <div>L: {formatNumber(selectedStock?.low)}</div>
-                        <div className="hidden sm:block">V: {formatVolume(selectedStock?.volume)}</div>
-                    </div>
-                    
-                    {/* Graph SVG */}
-                    <div className="flex-1 border border-gray-800 bg-[#080808] relative rounded-sm overflow-hidden w-full">
-                         <div className="absolute inset-0 grid grid-cols-6 grid-rows-4 pointer-events-none z-0">
-                            {[...Array(24)].map((_, i) => (
-                                <div key={i} className="border-r border-b border-gray-800/30"></div>
-                            ))}
-                         </div>
-                         
-                         <div className="absolute inset-0 p-2 md:p-4 z-10">
-                            {isLoading && chartData.length === 0 ? (
-                                <div className="h-full flex items-center justify-center text-gray-600 animate-pulse">Loading...</div>
-                            ) : (
-                                <svg width="100%" height="100%" viewBox="0 0 100 100" preserveAspectRatio="none">
-                                    <defs>
-                                        <linearGradient id="chartGradient" x1="0" x2="0" y1="0" y2="1">
-                                            <stop offset="0%" stopColor={isPositive ? "#22c55e" : "#ef4444"} stopOpacity="0.2"/>
-                                            <stop offset="100%" stopColor={isPositive ? "#22c55e" : "#ef4444"} stopOpacity="0"/>
-                                        </linearGradient>
-                                    </defs>
-                                    
-                                    {chartData.length > 1 && (
-                                        <>
-                                            <path 
-                                                d={`M0,100 
-                                                ${chartData.map((p, i) => {
-                                                        const min = Math.min(...chartData);
-                                                        const max = Math.max(...chartData);
-                                                        const rangeVal = max - min || 1;
-                                                        const x = (i / (chartData.length - 1)) * 100;
-                                                        const y = 100 - ((p - min) / rangeVal) * 80 - 10; 
-                                                        return `L${x},${y}`;
-                                                }).join(' ')} 
-                                                L100,100 Z`}
-                                                fill="url(#chartGradient)"
-                                            />
-                                            <path 
-                                                d={`M0,${100 - ((chartData[0] - Math.min(...chartData)) / (Math.max(...chartData) - Math.min(...chartData) || 1) * 80 + 10)} 
-                                                ${chartData.map((p, i) => {
-                                                        const min = Math.min(...chartData);
-                                                        const max = Math.max(...chartData);
-                                                        const rangeVal = max - min || 1;
-                                                        const x = (i / (chartData.length - 1)) * 100;
-                                                        const y = 100 - ((p - min) / rangeVal) * 80 - 10;
-                                                        return `L${x},${y}`;
-                                                }).join(' ')}`}
-                                                fill="none"
-                                                stroke={isPositive ? "#22c55e" : "#ef4444"}
-                                                strokeWidth="0.8"
-                                                vectorEffect="non-scaling-stroke"
-                                            />
-                                        </>
-                                    )}
-                                </svg>
-                            )}
-                         </div>
-                    </div>
-                </div>
-
-                {/* Info Panel (Bottom of Chart) */}
-                <div className="h-40 md:h-48 border-t border-gray-800 bg-[#0a0a0a] flex shrink-0">
-                    <div className="flex-1 p-2 border-r border-gray-800 overflow-y-auto">
-                         <div className="text-orange-500 text-xs font-bold mb-2">INFOS CLÉS</div>
-                         <div className="grid grid-cols-2 gap-2 text-[10px] md:text-xs font-mono text-gray-400">
-                             <div>PREV: <span className="text-white">{selectedStock?.prevClose}</span></div>
-                             <div>OPEN: <span className="text-white">{selectedStock?.price}</span></div>
-                             <div>CUR: <span className="text-white">{selectedStock?.currency}</span></div>
-                             <div>EXCH: <span className="text-white">N/A</span></div>
-                         </div>
-                    </div>
-                    <div className="w-1/3 p-2 flex flex-col justify-center items-center">
-                        <div className="text-gray-500 text-[10px] mb-2">RANGE {range === '10y' ? '10Y' : '1D'}</div>
-                        <div className="flex items-center gap-2 text-[10px] font-mono w-full justify-center">
-                            <span className="text-red-500 hidden sm:inline">{formatNumber(Math.min(...chartData))}</span>
-                            <div className="w-full sm:w-20 h-1 bg-gray-800 rounded relative">
-                                <div className="absolute h-full bg-orange-500 w-full left-0"></div>
-                            </div>
-                            <span className="text-green-500 hidden sm:inline">{formatNumber(Math.max(...chartData))}</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            {/* COLUMN 3: NEWS 
-               - Hidden on Mobile to save space
-               - Visible on Desktop
-            */}
-            <div className="w-80 border-l border-gray-800 bg-[#0a0a0a] flex-col hidden lg:flex">
-                <div className="p-2 bg-[#151515] border-b border-gray-800 font-bold text-orange-500 text-xs">
-                    DERNIÈRES NOUVELLES
-                </div>
-                <div className="flex-1 overflow-y-auto">
-                    {NEWS_FEED.map((news, i) => (
-                        <div key={i} className={`p-3 border-b border-gray-800 hover:bg-[#151515] cursor-pointer ${news.urgent ? 'border-l-2 border-l-red-500' : ''}`}>
-                            <div className="flex justify-between items-center mb-1">
-                                <span className="text-orange-400 font-bold text-[10px]">{news.source}</span>
-                                <span className="text-gray-500 text-[10px]">{news.time}</span>
-                            </div>
-                            <h3 className={`text-xs font-medium leading-snug ${news.urgent ? 'text-white' : 'text-gray-300'}`}>
-                                {news.urgent && <span className="text-red-500 font-bold mr-1">FLASH:</span>}
-                                {news.headline}
-                            </h3>
-                        </div>
-                    ))}
-                </div>
-            </div>
-
-        </main>
-      </div>
-
-      {/* --- FOOTER / COMMAND LINE --- */}
-      <footer className="h-10 md:h-8 bg-black border-t border-orange-900/50 flex items-center px-2 shrink-0 relative z-50">
-        
-        {/* SUGGESTION BOX POPUP */}
-        {showSuggestions && suggestions.length > 0 && (
-            <div className="absolute bottom-full left-0 mb-1 w-full md:w-96 bg-[#1a1a1a] border border-gray-700 shadow-xl rounded-t-lg overflow-hidden">
-                <div className="bg-orange-900/20 text-orange-500 text-[10px] px-2 py-1 font-bold">SUGGESTIONS (CLICK TO ADD)</div>
-                {suggestions.map((s, i) => (
-                    <div 
-                        key={i}
-                        onClick={() => addStockFromSuggestion(s)}
-                        className="p-2 border-b border-gray-800 hover:bg-orange-900/30 cursor-pointer flex justify-between items-center text-xs font-mono"
-                    >
-                        <div>
-                            <span className="font-bold text-white block">{s.symbol}</span>
-                            <span className="text-gray-500 text-[10px]">{s.shortname || s.longname}</span>
-                        </div>
-                        <span className="text-gray-600 border border-gray-700 px-1 rounded text-[9px]">{s.quoteType}</span>
-                    </div>
-                ))}
-            </div>
-        )}
-
-        <span className="text-orange-500 font-bold mr-2 text-sm">{'>'}</span>
-        <input 
-            type="text" 
-            value={commandInput}
-            onChange={(e) => setCommandInput(e.target.value)}
-            onKeyDown={handleCommandSubmit}
-            placeholder="CHERCHER (EX: TESLA, BTC...)" 
-            className="bg-transparent border-none outline-none text-orange-500 font-mono text-sm flex-1 placeholder-orange-900/50 uppercase"
-        />
-        <div className="flex space-x-2 md:space-x-4 text-[10px] text-gray-600 font-mono whitespace-nowrap">
-            <span className="hidden sm:inline">MEM: 64%</span>
-            <span>API: {isLoading ? 'BUSY' : 'OK'}</span>
-        </div>
-      </footer>
-      
-      {/* CSS Animation for Marquee */}
-      <style>{`
+        /* Animations */
         @keyframes marquee {
-          0% { transform: translateX(0); }
-          100% { transform: translateX(-50%); }
+            0% { transform: translateX(0); }
+            100% { transform: translateX(-50%); }
         }
         .animate-marquee {
-          animation: marquee 30s linear infinite;
+            animation: marquee 40s linear infinite;
         }
         .animate-marquee:hover {
             animation-play-state: paused;
         }
-      `}</style>
+
+        /* Utility classes */
+        .text-orange-terminal { color: #ff6b00; }
+        .bg-orange-terminal { background-color: #ff6b00; }
+        .border-orange-terminal { border-color: #ff6b00; }
+        
+        .selection-orange::selection {
+            background-color: #ff6b00;
+            color: black;
+        }
+    </style>
+</head>
+<body class="flex flex-col h-screen selection-orange">
+
+    <!-- HEADER -->
+    <header class="h-10 bg-[#1a1a1a] border-b border-gray-800 flex items-center justify-between px-2 text-xs font-mono uppercase tracking-wider shrink-0 z-50">
+        <div class="flex items-center space-x-2 md:space-x-4">
+            <!-- Mobile Back Button (Hidden by default) -->
+            <button id="btn-back" class="hidden md:hidden text-orange-terminal mr-1">
+                <i data-lucide="arrow-left" class="w-4 h-4"></i>
+            </button>
+            
+            <span class="text-orange-terminal font-bold flex items-center gap-1">
+                <i data-lucide="globe" class="w-3 h-3"></i> 
+                <span class="hidden sm:inline">BLOOMBERG</span> LITE 
+                <span id="status-message" class="text-[10px] opacity-70 hidden md:inline">:: PRET</span>
+            </span>
+            <span id="loader" class="hidden text-yellow-500"><i data-lucide="refresh-cw" class="w-3 h-3 animate-spin"></i></span>
+        </div>
+        <div class="flex items-center space-x-4">
+            <span id="clock" class="text-orange-terminal font-bold">--:--:--</span>
+            <span class="bg-orange-600 text-black px-1 font-bold hidden sm:inline">LIVE</span>
+        </div>
+    </header>
+
+    <!-- TICKER TAPE -->
+    <div class="h-8 bg-black border-b border-gray-800 flex items-center overflow-hidden whitespace-nowrap shrink-0">
+        <div id="ticker-tape" class="animate-marquee flex items-center space-x-8 px-4">
+            <!-- Ticker items will be injected here -->
+            <span class="text-xs font-mono text-gray-600">CONNEXION AUX MARCHÉS...</span>
+        </div>
     </div>
-  );
-}
+
+    <!-- MAIN CONTENT -->
+    <div class="flex-1 flex overflow-hidden relative">
+        
+        <!-- SIDEBAR (Desktop only) -->
+        <nav class="w-16 bg-[#111] hidden md:flex flex-col items-center py-4 border-r border-gray-800 space-y-6 shrink-0">
+            <button class="p-2 rounded hover:bg-gray-800 text-orange-terminal">
+                <i data-lucide="activity" class="w-5 h-5"></i>
+            </button>
+            <button onclick="toggleRange()" id="btn-hp-sidebar" class="p-2 rounded hover:bg-gray-800 text-gray-500" title="HP (Historique)">
+                <i data-lucide="calendar" class="w-5 h-5"></i>
+                <span class="text-[10px] font-bold block text-center mt-1">HP</span>
+            </button>
+            <div class="flex-1"></div>
+            <button onclick="refreshWatchlist()" class="p-2 rounded hover:bg-gray-800 text-gray-500">
+                <i data-lucide="refresh-cw" class="w-5 h-5"></i>
+            </button>
+        </nav>
+
+        <!-- CONTENT AREA -->
+        <main class="flex-1 flex relative w-full">
+            
+            <!-- COLUMN 1: WATCHLIST -->
+            <div id="view-watchlist" class="flex w-full md:w-80 border-r border-gray-800 bg-[#0a0a0a] flex-col">
+                <div class="p-2 bg-[#151515] border-b border-gray-800 font-bold text-orange-terminal text-xs flex justify-between">
+                    <span>SURVEILLANCE</span>
+                    <span class="md:hidden text-gray-500 text-[10px]">TAP TO VIEW</span>
+                </div>
+                <div id="watchlist-container" class="flex-1 overflow-y-auto">
+                    <!-- Watchlist items injected here -->
+                </div>
+            </div>
+
+            <!-- COLUMN 2: CHART (Hidden on mobile initially) -->
+            <div id="view-chart" class="hidden md:flex flex-1 flex-col bg-[#050505] w-full">
+                <!-- Header Info -->
+                <div class="h-16 border-b border-gray-800 px-4 md:px-6 flex items-center justify-between bg-[#0f0f0f] shrink-0">
+                    <div>
+                        <div class="flex items-baseline space-x-2 md:space-x-3">
+                            <h1 id="stock-id" class="text-xl md:text-2xl font-bold text-white">---</h1>
+                            <span id="stock-name" class="text-gray-400 text-sm hidden lg:inline">---</span>
+                        </div>
+                        <div class="text-[10px] text-gray-600 mt-1 font-mono flex gap-2 md:gap-4">
+                            <span id="stock-range-label">1D</span>
+                            <span id="stock-symbol" class="hidden sm:inline">| ---</span>
+                        </div>
+                    </div>
+                    <div class="text-right">
+                        <div id="stock-price" class="text-2xl md:text-3xl font-mono font-light text-gray-400">---</div>
+                        <div id="stock-change" class="text-xs md:text-sm font-mono flex items-center justify-end space-x-2 text-gray-400">
+                            <span>---</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Main Chart -->
+                <div class="flex-1 p-2 md:p-6 relative flex flex-col min-h-[300px]">
+                    <!-- Toolbar -->
+                    <div class="absolute top-2 right-2 md:top-4 md:right-6 z-20 flex space-x-1">
+                        <button onclick="setRange('1d')" id="btn-1d" class="px-2 py-1 text-[10px] font-bold border border-gray-700 bg-orange-600 text-black">1D</button>
+                        <button onclick="setRange('10y')" id="btn-10y" class="px-2 py-1 text-[10px] font-bold border border-gray-700 bg-black text-gray-500 hover:text-white">HP</button>
+                    </div>
+
+                    <!-- Stats Overlay -->
+                    <div class="absolute top-2 left-2 md:top-4 md:left-6 text-[10px] md:text-xs text-gray-500 font-mono space-y-1 z-10">
+                        <div>H: <span id="stat-high">---</span></div>
+                        <div>L: <span id="stat-low">---</span></div>
+                        <div class="hidden sm:block">V: <span id="stat-vol">---</span></div>
+                    </div>
+                    
+                    <!-- SVG Chart Container -->
+                    <div class="flex-1 border border-gray-800 bg-[#080808] relative rounded-sm overflow-hidden w-full" id="chart-container">
+                        <!-- Grid -->
+                        <div class="absolute inset-0 grid grid-cols-6 grid-rows-4 pointer-events-none z-0">
+                             <!-- Grid lines generated via JS or simple HTML repetition -->
+                             <div class="border-r border-b border-gray-800/30 w-full h-full absolute"></div>
+                        </div>
+                        <!-- SVG injected here -->
+                        <div id="chart-svg-wrapper" class="absolute inset-0 p-2 md:p-4 z-10 w-full h-full"></div>
+                    </div>
+                </div>
+
+                <!-- Info Panel -->
+                <div class="h-40 md:h-48 border-t border-gray-800 bg-[#0a0a0a] flex shrink-0">
+                    <div class="flex-1 p-2 border-r border-gray-800 overflow-y-auto">
+                         <div class="text-orange-terminal text-xs font-bold mb-2">INFOS CLÉS</div>
+                         <div class="grid grid-cols-2 gap-2 text-[10px] md:text-xs font-mono text-gray-400">
+                             <div>PREV: <span id="info-prev" class="text-white">---</span></div>
+                             <div>OPEN: <span id="info-open" class="text-white">---</span></div>
+                             <div>CUR: <span id="info-cur" class="text-white">---</span></div>
+                             <div>TYPE: <span id="info-type" class="text-white">---</span></div>
+                         </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- COLUMN 3: NEWS (Desktop only) -->
+            <div class="w-80 border-l border-gray-800 bg-[#0a0a0a] flex-col hidden lg:flex">
+                <div class="p-2 bg-[#151515] border-b border-gray-800 font-bold text-orange-terminal text-xs">
+                    DERNIÈRES NOUVELLES
+                </div>
+                <div id="news-container" class="flex-1 overflow-y-auto">
+                    <!-- News items injected here -->
+                </div>
+            </div>
+
+        </main>
+    </div>
+
+    <!-- FOOTER / COMMAND LINE -->
+    <footer class="h-10 md:h-8 bg-black border-t border-orange-900/50 flex items-center px-2 shrink-0 relative z-50">
+        <!-- Suggestions Popup -->
+        <div id="suggestions-box" class="hidden absolute bottom-full left-0 mb-1 w-full md:w-96 bg-[#1a1a1a] border border-gray-700 shadow-xl rounded-t-lg overflow-hidden">
+            <div class="bg-orange-900/20 text-orange-terminal text-[10px] px-2 py-1 font-bold">SUGGESTIONS (ENTRÉE ou CLIC)</div>
+            <div id="suggestions-list"></div>
+        </div>
+
+        <span class="text-orange-terminal font-bold mr-2 text-sm">&gt;</span>
+        <input 
+            type="text" 
+            id="command-input"
+            placeholder="CHERCHER (EX: TESLA, BTC...)" 
+            class="bg-transparent border-none outline-none text-orange-terminal font-mono text-sm flex-1 placeholder-orange-900/50 uppercase"
+            autocomplete="off"
+        />
+        <div class="flex space-x-2 md:space-x-4 text-[10px] text-gray-600 font-mono whitespace-nowrap">
+            <span class="hidden sm:inline">MEM: 64%</span>
+            <span>API: <span id="api-status">OK</span></span>
+        </div>
+    </footer>
+
+    <!-- JAVASCRIPT LOGIC -->
+    <script>
+        // --- CONFIG & STATE ---
+        let stocksConfig = [
+            { id: 'CAC40', yahooSymbol: '^FCHI', name: 'CAC 40 Index', type: 'INDEX' },
+            { id: 'EUR/USD', yahooSymbol: 'EURUSD=X', name: 'Euro / US Dollar', type: 'FOREX' },
+            { id: 'BTC/USD', yahooSymbol: 'BTC-USD', name: 'Bitcoin USD', type: 'CRYPTO' },
+            { id: 'TOTAL', yahooSymbol: 'TTE.PA', name: 'TotalEnergies', type: 'EQUITY' },
+            { id: 'LVMH', yahooSymbol: 'MC.PA', name: 'LVMH Moet Hennessy', type: 'EQUITY' },
+            { id: 'GOLD', yahooSymbol: 'GC=F', name: 'Gold Futures', type: 'COMMODITY' },
+        ];
+        
+        const newsFeed = [
+            { time: '10:42', source: 'RTR', headline: 'BCE : Lagarde signale une baisse potentielle des taux en juin.', urgent: true },
+            { time: '10:38', source: 'BBG', headline: 'Le pétrole bondit suite aux tensions géopolitiques au Moyen-Orient.', urgent: false },
+            { time: '10:15', source: 'WSJ', headline: 'Tech : Les résultats de NVIDIA dépassent les attentes des analystes.', urgent: false },
+            { time: '09:55', source: 'AFP', headline: 'CAC40 : Ouverture en hausse, portée par le secteur du luxe.', urgent: false },
+            { time: '09:30', source: 'RTR', headline: 'Inflation en zone Euro : Les chiffres conformes aux prévisions.', urgent: false }
+        ];
+
+        let stocksData = [];
+        let selectedTickerId = 'CAC40';
+        let chartData = [];
+        let currentRange = '1d'; // '1d' or '10y'
+        let mobileView = 'LIST'; // 'LIST' or 'CHART'
+        let searchTimeout = null;
+        let suggestions = [];
+
+        // --- UTILS ---
+        const formatNumber = (num) => {
+            if (num === undefined || num === null) return '---';
+            return new Intl.NumberFormat('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(num);
+        };
+
+        const formatVolume = (num) => {
+            if (!num) return '---';
+            if (num >= 1.0e+9) return (num / 1.0e+9).toFixed(2) + "Md";
+            if (num >= 1.0e+6) return (num / 1.0e+6).toFixed(2) + "M";
+            if (num >= 1.0e+3) return (num / 1.0e+3).toFixed(2) + "K";
+            return num;
+        };
+
+        const getChangeColorClass = (val) => val >= 0 ? 'text-green-500' : 'text-red-500';
+        const getBgColorClass = (val) => val >= 0 ? 'bg-green-500/10' : 'bg-red-500/10';
+
+        // --- DOM ELEMENTS ---
+        const els = {
+            clock: document.getElementById('clock'),
+            tickerTape: document.getElementById('ticker-tape'),
+            watchlist: document.getElementById('watchlist-container'),
+            news: document.getElementById('news-container'),
+            input: document.getElementById('command-input'),
+            suggestionsBox: document.getElementById('suggestions-box'),
+            suggestionsList: document.getElementById('suggestions-list'),
+            loader: document.getElementById('loader'),
+            statusMsg: document.getElementById('status-message'),
+            
+            // Views
+            viewList: document.getElementById('view-watchlist'),
+            viewChart: document.getElementById('view-chart'),
+            btnBack: document.getElementById('btn-back'),
+
+            // Chart UI
+            stockId: document.getElementById('stock-id'),
+            stockName: document.getElementById('stock-name'),
+            stockSymbol: document.getElementById('stock-symbol'),
+            stockPrice: document.getElementById('stock-price'),
+            stockChange: document.getElementById('stock-change'),
+            stockRangeLabel: document.getElementById('stock-range-label'),
+            chartSvgWrapper: document.getElementById('chart-svg-wrapper'),
+            
+            statHigh: document.getElementById('stat-high'),
+            statLow: document.getElementById('stat-low'),
+            statVol: document.getElementById('stat-vol'),
+            
+            infoPrev: document.getElementById('info-prev'),
+            infoOpen: document.getElementById('info-open'),
+            infoCur: document.getElementById('info-cur'),
+            infoType: document.getElementById('info-type'),
+
+            btn1d: document.getElementById('btn-1d'),
+            btn10y: document.getElementById('btn-10y'),
+            btnHpSidebar: document.getElementById('btn-hp-sidebar')
+        };
+
+        // --- API FUNCTIONS ---
+
+        async function fetchStockData(stockConfig, timeRange = '1d') {
+            let interval = '5m';
+            let rangeParam = '1d';
+
+            if (timeRange === '10y') {
+                interval = '1mo';
+                rangeParam = '10y';
+            }
+
+            const url = `https://query1.finance.yahoo.com/v8/finance/chart/${stockConfig.yahooSymbol}?interval=${interval}&range=${rangeParam}`;
+            // Proxy CORS
+            const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(url)}`;
+            
+            try {
+                const response = await fetch(proxyUrl);
+                const data = await response.json();
+                
+                if (data.chart && data.chart.result && data.chart.result[0]) {
+                    const result = data.chart.result[0];
+                    const meta = result.meta;
+                    const quote = result.indicators.quote[0];
+                    
+                    const price = meta.regularMarketPrice;
+                    const prevClose = meta.chartPreviousClose;
+                    const change = price - prevClose; 
+                    const changePercent = (change / prevClose) * 100;
+
+                    const cleanChartData = quote.close ? quote.close.filter(p => p !== null) : [];
+
+                    return {
+                        ...stockConfig,
+                        price: price,
+                        change: changePercent,
+                        changeValue: change,
+                        volume: meta.regularMarketVolume || 0,
+                        history: cleanChartData,
+                        currency: meta.currency,
+                        high: meta.regularMarketDayHigh,
+                        low: meta.regularMarketDayLow,
+                        prevClose: prevClose,
+                        fetchedRange: timeRange
+                    };
+                }
+                return null;
+            } catch (err) {
+                console.error(`Error fetching ${stockConfig.yahooSymbol}:`, err);
+                return null;
+            }
+        }
+
+        async function fetchSuggestions(query) {
+            if (!query || query.length < 2) return [];
+            
+            const url = `https://query1.finance.yahoo.com/v1/finance/search?q=${query}&quotesCount=5&newsCount=0`;
+            const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(url)}`;
+
+            try {
+                const response = await fetch(proxyUrl);
+                const data = await response.json();
+                if (data.quotes && data.quotes.length > 0) {
+                    return data.quotes
+                        .filter(q => ['EQUITY', 'INDEX', 'ETF', 'CRYPTOCURRENCY'].includes(q.quoteType))
+                        .slice(0, 4);
+                }
+                return [];
+            } catch (e) {
+                console.error("Search error", e);
+                return [];
+            }
+        }
+
+        // --- CORE LOGIC ---
+
+        async function refreshWatchlist() {
+            els.loader.classList.remove('hidden');
+            els.statusMsg.innerText = 'ACTUALISATION...';
+            
+            const promises = stocksConfig.map(stock => fetchStockData(stock, '1d'));
+            const results = await Promise.all(promises);
+            const validResults = results.filter(r => r !== null);
+            
+            if (validResults.length > 0) {
+                stocksData = validResults;
+                els.statusMsg.innerText = 'PRET';
+                renderWatchlist();
+                renderTickerTape();
+                
+                // Update chart if range is 1d
+                if (currentRange === '1d') {
+                    const current = stocksData.find(s => s.id === selectedTickerId);
+                    if (current) {
+                        chartData = current.history;
+                        updateChartUI(current);
+                    }
+                }
+            }
+            els.loader.classList.add('hidden');
+        }
+
+        async function fetchSpecificTicker(tickerId, targetRange) {
+            els.loader.classList.remove('hidden');
+            els.statusMsg.innerText = `CHARGEMENT ${targetRange.toUpperCase()}...`;
+            
+            const config = stocksConfig.find(s => s.id === tickerId) || stocksConfig.find(s => s.yahooSymbol === tickerId);
+            if (!config) {
+                els.loader.classList.add('hidden');
+                return;
+            }
+
+            const data = await fetchStockData(config, targetRange);
+            if (data) {
+                chartData = data.history;
+                // Merge data
+                const idx = stocksData.findIndex(s => s.id === config.id);
+                if (idx >= 0) {
+                    stocksData[idx] = { ...data, history: data.history };
+                } else {
+                    stocksData.push(data);
+                }
+                updateChartUI(data);
+                renderWatchlist(); // Update prices in list
+            }
+            els.loader.classList.add('hidden');
+            els.statusMsg.innerText = 'PRET';
+        }
+
+        function setRange(newRange) {
+            currentRange = newRange;
+            
+            // Update Buttons State
+            if (newRange === '10y') {
+                els.btn1d.classList.replace('bg-orange-600', 'bg-black'); els.btn1d.classList.replace('text-black', 'text-gray-500');
+                els.btn10y.classList.replace('bg-black', 'bg-orange-600'); els.btn10y.classList.replace('text-gray-500', 'text-black');
+                els.btnHpSidebar.classList.add('text-orange-terminal', 'bg-orange-900/20');
+            } else {
+                els.btn10y.classList.replace('bg-orange-600', 'bg-black'); els.btn10y.classList.replace('text-black', 'text-gray-500');
+                els.btn1d.classList.replace('bg-black', 'bg-orange-600'); els.btn1d.classList.replace('text-gray-500', 'text-black');
+                els.btnHpSidebar.classList.remove('text-orange-terminal', 'bg-orange-900/20');
+            }
+
+            fetchSpecificTicker(selectedTickerId, currentRange);
+        }
+        
+        function toggleRange() {
+            setRange(currentRange === '1d' ? '10y' : '1d');
+        }
+
+        function selectTicker(id) {
+            selectedTickerId = id;
+            setRange('1d'); // Reset to 1d on change
+            
+            // Handle Mobile
+            if (window.innerWidth < 768) {
+                setMobileView('CHART');
+            }
+            renderWatchlist(); // highlight selection
+        }
+
+        function setMobileView(view) {
+            mobileView = view;
+            if (view === 'CHART') {
+                els.viewList.classList.remove('flex'); els.viewList.classList.add('hidden');
+                els.viewChart.classList.remove('hidden'); els.viewChart.classList.add('flex');
+                els.btnBack.classList.remove('hidden');
+            } else {
+                els.viewChart.classList.remove('flex'); els.viewChart.classList.add('hidden');
+                els.viewList.classList.remove('hidden'); els.viewList.classList.add('flex');
+                els.btnBack.classList.add('hidden');
+            }
+        }
+
+        // --- RENDER FUNCTIONS ---
+
+        function renderTickerTape() {
+            if (stocksData.length === 0) return;
+            const html = stocksData.map(s => `
+                <div class="flex items-center space-x-2 text-xs font-mono">
+                    <span class="font-bold text-orange-400">${s.id}</span>
+                    <span class="${getChangeColorClass(s.change)}">${formatNumber(s.price)}</span>
+                    <span class="text-[10px] ${getChangeColorClass(s.change)}">
+                        ${s.change >= 0 ? '▲' : '▼'} ${Math.abs(s.change).toFixed(2)}%
+                    </span>
+                </div>
+            `).join('');
+            // Duplicate for smooth loop
+            els.tickerTape.innerHTML = html + html;
+        }
+
+        function renderWatchlist() {
+            els.watchlist.innerHTML = stocksData.map(stock => {
+                const isSelected = stock.id === selectedTickerId;
+                const changeColor = getChangeColorClass(stock.change);
+                const bgBadge = getBgColorClass(stock.change);
+                
+                return `
+                <div onclick="selectTicker('${stock.id}')" 
+                     class="p-3 border-b border-gray-800 cursor-pointer hover:bg-[#1a1a1a] transition-colors 
+                     ${isSelected ? 'bg-[#1a1a1a] border-l-2 border-l-orange-terminal' : 'border-l-2 border-l-transparent'}">
+                    <div class="flex justify-between items-center mb-1">
+                        <span class="font-bold text-sm text-gray-200">${stock.id}</span>
+                        <span class="text-sm font-mono font-medium ${changeColor}">${formatNumber(stock.price)}</span>
+                    </div>
+                    <div class="flex justify-between items-center text-xs">
+                        <span class="text-gray-500 truncate w-24">${stock.name}</span>
+                        <div class="px-1.5 py-0.5 rounded ${bgBadge} ${changeColor}">
+                            ${stock.change > 0 ? '+' : ''}${stock.change ? stock.change.toFixed(2) : '0.00'}%
+                        </div>
+                    </div>
+                </div>
+                `;
+            }).join('');
+        }
+
+        function renderNews() {
+            els.news.innerHTML = newsFeed.map(news => `
+                <div class="p-3 border-b border-gray-800 hover:bg-[#151515] cursor-pointer ${news.urgent ? 'border-l-2 border-l-red-500' : ''}">
+                    <div class="flex justify-between items-center mb-1">
+                        <span class="text-orange-400 font-bold text-[10px]">${news.source}</span>
+                        <span class="text-gray-500 text-[10px]">${news.time}</span>
+                    </div>
+                    <h3 class="text-xs font-medium leading-snug ${news.urgent ? 'text-white' : 'text-gray-300'}">
+                        ${news.urgent ? '<span class="text-red-500 font-bold mr-1">FLASH:</span>' : ''}
+                        ${news.headline}
+                    </h3>
+                </div>
+            `).join('');
+        }
+
+        function updateChartUI(data) {
+            if(!data) return;
+
+            // Update Header
+            els.stockId.innerText = data.id;
+            els.stockName.innerText = data.name;
+            els.stockSymbol.innerText = `| ${data.yahooSymbol}`;
+            els.stockRangeLabel.innerText = currentRange === '10y' ? 'HP (10Y)' : '1D';
+            
+            const changeCol = getChangeColorClass(data.change);
+            els.stockPrice.className = `text-2xl md:text-3xl font-mono font-light ${changeCol}`;
+            els.stockPrice.innerText = formatNumber(data.price);
+            
+            els.stockChange.className = `text-xs md:text-sm font-mono flex items-center justify-end space-x-2 ${changeCol}`;
+            els.stockChange.innerHTML = `
+                <span>${data.change > 0 ? '+' : ''}${data.changeValue ? data.changeValue.toFixed(2) : '0.00'}</span>
+                <span>(${data.change > 0 ? '+' : ''}${data.change ? data.change.toFixed(2) : '0.00'}%)</span>
+            `;
+
+            // Update Info Panel
+            els.infoPrev.innerText = formatNumber(data.prevClose);
+            els.infoOpen.innerText = formatNumber(data.price); // Using current price as open proxy for simplicity in display
+            els.infoCur.innerText = data.currency || '---';
+            els.infoType.innerText = data.type;
+            
+            els.statHigh.innerText = formatNumber(data.high);
+            els.statLow.innerText = formatNumber(data.low);
+            els.statVol.innerText = formatVolume(data.volume);
+
+            // DRAW SVG CHART
+            renderChartSVG(data.history, data.change >= 0);
+        }
+
+        function renderChartSVG(dataPoints, isPositive) {
+            if (!dataPoints || dataPoints.length < 2) {
+                els.chartSvgWrapper.innerHTML = '<div class="h-full flex items-center justify-center text-gray-600">Pas de données</div>';
+                return;
+            }
+
+            const width = 100;
+            const height = 100;
+            const min = Math.min(...dataPoints);
+            const max = Math.max(...dataPoints);
+            const rangeVal = max - min || 1;
+
+            const color = isPositive ? "#22c55e" : "#ef4444";
+
+            // Generate path string
+            const points = dataPoints.map((p, i) => {
+                const x = (i / (dataPoints.length - 1)) * width;
+                const y = height - ((p - min) / rangeVal) * 80 - 10; // 80% height usage, 10% padding bottom
+                return `${x},${y}`;
+            }).join(' ');
+
+            // Area path (closed loop)
+            const areaPathD = `M0,${height} L${points.replace(/ /g, ' L')} L${width},${height} Z`;
+            // Line path
+            const linePathD = `M${points.split(' ')[0]} L${points.replace(/ /g, ' L')}`;
+
+            const svgHTML = `
+                <svg width="100%" height="100%" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
+                    <defs>
+                        <linearGradient id="chartGradient" x1="0" x2="0" y1="0" y2="1">
+                            <stop offset="0%" stopColor="${color}" stopOpacity="0.2"/>
+                            <stop offset="100%" stopColor="${color}" stopOpacity="0"/>
+                        </linearGradient>
+                    </defs>
+                    <path d="${areaPathD}" fill="url(#chartGradient)" />
+                    <path d="${linePathD}" fill="none" stroke="${color}" stroke-width="0.8" vector-effect="non-scaling-stroke" />
+                </svg>
+            `;
+            
+            els.chartSvgWrapper.innerHTML = svgHTML;
+        }
+
+        // --- EVENT LISTENERS (SEARCH & INPUT) ---
+
+        els.input.addEventListener('input', (e) => {
+            const val = e.target.value.toUpperCase();
+            if (searchTimeout) clearTimeout(searchTimeout);
+
+            if (val.length >= 2) {
+                searchTimeout = setTimeout(async () => {
+                    const results = await fetchSuggestions(val);
+                    suggestions = results;
+                    renderSuggestions();
+                }, 400);
+            } else {
+                els.suggestionsBox.classList.add('hidden');
+            }
+        });
+
+        els.input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                const cmd = els.input.value.trim().toUpperCase();
+                
+                if (cmd === 'HP') { setRange('10y'); els.input.value = ''; els.suggestionsBox.classList.add('hidden'); return; }
+                if (cmd === '1D') { setRange('1d'); els.input.value = ''; els.suggestionsBox.classList.add('hidden'); return; }
+
+                if (suggestions.length > 0) {
+                    addStockFromSuggestion(suggestions[0]);
+                } else if (cmd.length > 0) {
+                     // Try direct add
+                     addStockFromSuggestion({ symbol: cmd, quoteType: 'EQUITY', shortname: `${cmd} (Custom)` });
+                }
+                els.input.value = '';
+                els.suggestionsBox.classList.add('hidden');
+            }
+        });
+
+        function renderSuggestions() {
+            if (suggestions.length === 0) {
+                els.suggestionsBox.classList.add('hidden');
+                return;
+            }
+            els.suggestionsBox.classList.remove('hidden');
+            els.suggestionsList.innerHTML = suggestions.map((s, i) => `
+                <div onclick='addStockFromSuggestion(${JSON.stringify(s).replace(/'/g, "&#39;")})'
+                    class="p-2 border-b border-gray-800 hover:bg-orange-900/30 cursor-pointer flex justify-between items-center text-xs font-mono">
+                    <div>
+                        <span class="font-bold text-white block">${s.symbol}</span>
+                        <span class="text-gray-500 text-[10px]">${s.shortname || s.longname || s.symbol}</span>
+                    </div>
+                    <span class="text-gray-600 border border-gray-700 px-1 rounded text-[9px]">${s.quoteType}</span>
+                </div>
+            `).join('');
+        }
+
+        function addStockFromSuggestion(s) {
+            els.input.value = '';
+            els.suggestionsBox.classList.add('hidden');
+            els.statusMsg.innerText = `AJOUT DE ${s.symbol}...`;
+
+            const newStock = { 
+                id: s.symbol, 
+                yahooSymbol: s.symbol, 
+                name: s.shortname || s.longname || s.symbol, 
+                type: s.quoteType 
+            };
+
+            // Avoid dupes
+            if (!stocksConfig.find(sc => sc.id === newStock.id)) {
+                stocksConfig.unshift(newStock); // Add to top
+            }
+            
+            selectTicker(newStock.id); // Triggers renderWatchlist
+            fetchSpecificTicker(newStock.id, '1d'); // Fetch data
+        }
+
+        // --- MOBILE NAV ---
+        els.btnBack.addEventListener('click', () => setMobileView('LIST'));
+
+        // --- INIT ---
+        function init() {
+            // Start Clock
+            setInterval(() => {
+                els.clock.innerText = new Date().toLocaleTimeString();
+            }, 1000);
+
+            // Initial Render
+            renderNews();
+            renderWatchlist();
+            lucide.createIcons();
+
+            // Initial Fetch
+            refreshWatchlist();
+            
+            // Auto Refresh Loop
+            setInterval(refreshWatchlist, 60000);
+        }
+
+        init();
+
+    </script>
+</body>
+</html>
